@@ -272,61 +272,78 @@ exist and are up-to-date."
   :group 'auto-compile
   :type 'boolean)
 
+(defcustom auto-compile-package-root-functions nil
+  ""
+  )
+
 ;;;###autoload
 (defun toggle-auto-compile (file action)
-  "Toggle automatic compilation of an Emacs Lisp source file or files.
+  "Toggle automatic compilation of Emacs Lisp source files.
 
 Read a file or directory name from the minibuffer defaulting to
 the visited Emacs Lisp source file or `default-directory' if no
 such file is being visited in the current buffer.
 
 If the user selects a file then automatic compilation of only
-that file is toggled.  Since both `auto-compile-on-save' and
-`auto-compile-on-save' only ever _recompile_ byte code files,
-toggling automatic compilation is done simply by creating or
-removing the respective byte code file.
+that file is toggled; otherwise when a directory is selected
+automatic compilation is recursively toggled for all libraries in
+that directory and it's subdirectories.
 
-If the user selects a directory then automatic compilation for
-multiple files is toggled as follows:
+Since both `auto-compile-on-save' and `auto-compile-on-load' only
+ever _recompile_ byte code files, toggling automatic compilation
+is done simply by creating or removing the respective byte code
+file.
 
-* Whether byte code files should be created or removed is
-  determined by the existence or absence of the byte code file of
-  the source file that was current when this command was invoked.
+With a prefix argument also read a file or directory name but
+always default to a directory.  First determine the package root
+using the functions in `auto-compile-package-root-functions'.
+The first non-nil value or else `default-directory' becomes the
+default.  With a positive prefix argument compile source files;
+with a negative prefix argument remove byte code files.
 
-* If no Emacs Lisp source file is being visited in the buffer
-  that was current when the command was invoked ask the user what
-  to do.
+If the user selects a directory but did not use a prefix argument
+then the action is determined by the existence or absence of the
+byte code file of the source file that was current when this
+command was invoked, and the _same_ action is carried out for all
+affected source files, regardless whether _their_ respective byte
+code files exist.  If no source file is being visited in the
+current buffer ask the user what to do.
 
-* With a positive prefix argument always compile source files;
-  with a negative prefix argument always remove byte code files.
+When recursively toggling automatic compilation this command
+avoids _starting to_ compile source files which usually should
+not be compiled.
 
-* When _removing_ byte code files then all byte code files are
-  removed.  If `auto-compile-deletes-stray-dest' is non-nil this
-  even includes byte code files for which no source file exists.
+1. Only source files for which `packed-library-p' returns t are
+   _newly_ compiled.  This is the case if an only if the file
+   provides the correct feature; that is a feature that matches
+   the filename.
 
-* When _creating_ byte code files only do so for source files
-  that are actual libraries.  Source files that provide the
-  correct feature are considered to be libraries; see
-  `packed-library-p'.
+2. But when removing byte code files they are removed regardless
+   whether the source files they were created from are considered
+   to be libraries.  If `auto-compile-deletes-stray-dest' is
+   non-nil even remove byte code files for which no source file
+   exists.
 
-* Note that non-libraries can still be automatically compiled,
-  you just cannot _recursively_ turn on automatic compilation
-  using this command.
+3. Only directories for which `packed-ignore-directory-p' returns
+   nil are processed.  Directories containing a file named
+   \".nosearch\", hidden directories and a few well known special
+   cases are ignored by this command; and so are the files they
+   contain.
 
-* When `auto-compile-toggle-recompiles' is non-nil recompile all
-  affected source files even when the respective source files are
-  up-to-date.  Do so even for non-library source files.
-
-* When `auto-compile-toggle-recursively' is non-nil recurse into
-  subdirectories otherwise only files in the selected directory
-  are affected.  Only enter subdirectories for which function
-  `packed-ignore-directory-p' returns nil; most importantly don't
-  enter hidden directories or those containing a file named
-  \".nosearch\"."
+Note that these three rules only affect this command and only in
+recursive use.  When a source file is saved and the respective
+byte code does exist for whatever reason then the file is
+_always_ recompiled by `auto-compile-on-save' and
+`auto-compile-on-load'.  Likewise it is possible to start of stop
+automatic compilation of non-libraries using this command - just
+not recursively."
   (interactive
    (let* ((buf  (current-buffer))
           (file (when (eq major-mode 'emacs-lisp-mode)
                   (buffer-file-name)))
+          (root (run-hook-with-args-until-success
+                 auto-compile-package-root-functions
+                 (or file default-directory)))
           (action
            (cond
             (current-prefix-arg
@@ -342,13 +359,17 @@ multiple files is toggled as follows:
                        "Toggle automatic compilation (s=tart, q=uit, C-g)? "
                        '(?s ?q))
                (?s 'start)
-               (?q 'quit))))))
-     (list (read-file-name (concat (capitalize (symbol-name action))
+               (?q 'quit)))))
+          (read-dir (file-name-as-directory (or root default-directory)))
+          (file-arg
+           (read-file-name (concat (capitalize (symbol-name action))
                                    " auto-compiling: ")
-                           (and file (file-name-directory file))
-                           nil t
-                           (and file (file-name-nondirectory file)))
-           action)))
+                           read-dir read-dir t
+                           (and file (not root)
+                                (file-name-nondirectory file)))))
+     (when (equal file-arg "")
+       (error "No file or directory selected"))
+     (list file-arg action)))
   (if (file-regular-p file)
       (cl-case action
         (start (auto-compile-byte-compile file t))
